@@ -26,8 +26,57 @@ struct Mix {
 }
 
 #[repr(align(128))]
-struct Slot {
-    lock: RwLock<usize>,
+struct Slot<L> {
+    lock: L,
+}
+
+trait BenchLock: Send + Sync + 'static {
+    const NAME: &'static str;
+
+    fn new(value: usize) -> Self;
+    fn read(&self);
+    fn write(&self);
+}
+
+struct RblockLock(RwLock<usize>);
+struct ParkingLotLock(parking_lot::RwLock<usize>);
+
+impl BenchLock for RblockLock {
+    const NAME: &'static str = "rblock";
+
+    fn new(value: usize) -> Self {
+        Self(RwLock::new(value))
+    }
+
+    fn read(&self) {
+        let guard = self.0.read();
+        black_box(*guard);
+    }
+
+    fn write(&self) {
+        let mut guard = self.0.write();
+        *guard = guard.wrapping_add(1);
+        black_box(*guard);
+    }
+}
+
+impl BenchLock for ParkingLotLock {
+    const NAME: &'static str = "parking_lot";
+
+    fn new(value: usize) -> Self {
+        Self(parking_lot::RwLock::new(value))
+    }
+
+    fn read(&self) {
+        let guard = self.0.read();
+        black_box(*guard);
+    }
+
+    fn write(&self) {
+        let mut guard = self.0.write();
+        *guard = guard.wrapping_add(1);
+        black_box(*guard);
+    }
 }
 
 fn main() {
@@ -41,11 +90,21 @@ fn main() {
     );
     println!();
     println!(
-        "| {:>7} | {:>6} | {:>8} | {:>14} | {:>14} | {:>10} | {:>10} | {:>10} | {:>8} |",
-        "threads", "shards", "mix", "ops/sec", "ops/thread/sec", "p50", "p99", "p99.9", "samples"
+        "| {:>11} | {:>7} | {:>6} | {:>8} | {:>14} | {:>14} | {:>10} | {:>10} | {:>10} | {:>8} |",
+        "lock",
+        "threads",
+        "shards",
+        "mix",
+        "ops/sec",
+        "ops/thread/sec",
+        "p50",
+        "p99",
+        "p99.9",
+        "samples"
     );
     println!(
-        "| {:>7} | {:>6} | {:>8} | {:>14} | {:>14} | {:>10} | {:>10} | {:>10} | {:>8} |",
+        "| {:>11} | {:>7} | {:>6} | {:>8} | {:>14} | {:>14} | {:>10} | {:>10} | {:>10} | {:>8} |",
+        "-".repeat(11),
         "-".repeat(7),
         "-".repeat(6),
         "-".repeat(8),
@@ -60,35 +119,34 @@ fn main() {
     for &threads in &args.threads {
         for &shards in &args.shards {
             for &mix in &args.mixes {
-                let result = run_case(
+                print_result(run_case::<RblockLock>(
                     threads,
                     shards,
                     mix,
                     args.warmup,
                     args.duration,
                     args.latency_sample_rate,
-                );
-                println!(
-                    "| {:>7} | {:>6} | {:>8} | {:>14.0} | {:>14.0} | {:>10} | {:>10} | {:>10} | {:>8} |",
+                ));
+                print_result(run_case::<ParkingLotLock>(
                     threads,
                     shards,
-                    mix.label,
-                    result.ops_per_sec(),
-                    result.ops_per_thread_per_sec(),
-                    format_ns(result.percentile_ns(500)),
-                    format_ns(result.percentile_ns(990)),
-                    format_ns(result.percentile_ns(999)),
-                    result.samples.len(),
-                );
+                    mix,
+                    args.warmup,
+                    args.duration,
+                    args.latency_sample_rate,
+                ));
             }
         }
     }
 }
 
 struct RunResult {
+    lock: &'static str,
+    mix: &'static str,
     ops: usize,
     elapsed: Duration,
     threads: usize,
+    shards: usize,
     samples: Vec<u64>,
 }
 
@@ -115,7 +173,23 @@ impl RunResult {
     }
 }
 
-fn run_case(
+fn print_result(result: RunResult) {
+    println!(
+        "| {:>11} | {:>7} | {:>6} | {:>8} | {:>14.0} | {:>14.0} | {:>10} | {:>10} | {:>10} | {:>8} |",
+        result.lock,
+        result.threads,
+        result.shards,
+        result.mix,
+        result.ops_per_sec(),
+        result.ops_per_thread_per_sec(),
+        format_ns(result.percentile_ns(500)),
+        format_ns(result.percentile_ns(990)),
+        format_ns(result.percentile_ns(999)),
+        result.samples.len(),
+    );
+}
+
+fn run_case<L: BenchLock>(
     threads: usize,
     shards: usize,
     mix: Mix,
@@ -128,9 +202,7 @@ fn run_case(
 
     let locks = Arc::new(
         (0..shards)
-            .map(|_| Slot {
-                lock: RwLock::new(0),
-            })
+            .map(|_| Slot { lock: L::new(0) })
             .collect::<Vec<_>>(),
     );
     let phase = Arc::new(AtomicUsize::new(0));
@@ -195,9 +267,12 @@ fn run_case(
     samples.sort_unstable();
 
     RunResult {
+        lock: L::NAME,
+        mix: mix.label,
         ops,
         elapsed: start.elapsed(),
         threads,
+        shards,
         samples,
     }
 }
@@ -207,7 +282,7 @@ fn elapsed_ns(start: Instant) -> u64 {
 }
 
 #[inline(always)]
-fn run_op(locks: &[Slot], shards: usize, mix: Mix, rng: &mut u64) {
+fn run_op<L: BenchLock>(locks: &[Slot<L>], shards: usize, mix: Mix, rng: &mut u64) {
     let shard = if shards == 1 {
         0
     } else {
@@ -217,12 +292,9 @@ fn run_op(locks: &[Slot], shards: usize, mix: Mix, rng: &mut u64) {
         mix.read_pct == 100 || (mix.read_pct != 0 && next_usize(rng) % 100 < mix.read_pct as usize);
 
     if is_read {
-        let guard = locks[shard].lock.read();
-        black_box(*guard);
+        locks[shard].lock.read();
     } else {
-        let mut guard = locks[shard].lock.write();
-        *guard = guard.wrapping_add(1);
-        black_box(*guard);
+        locks[shard].lock.write();
     }
 }
 

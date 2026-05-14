@@ -78,7 +78,7 @@ temporary workspace on the server:
 ./scripts/run-linux-bench.sh
 
 BENCH=writer_progress \
-./scripts/run-linux-bench.sh -- \
+./scripts/run-linux-bench.sh \
   --duration-ms 500 \
   --warmup-ms 150 \
   --readers 1,2,4,8,16
@@ -96,19 +96,48 @@ These are representative Linux results from May 14, 2026. They are
 workload-specific; rerun the harness for your hardware and key distribution
 before making a production decision.
 
-### Shared cache lock policy
+### Lock-Only Load Benchmark
 
-512B values, uniform keys, 16 clients, 16 vCPU budget:
+Command:
 
-| Mix | Read-biased ops/sec | Parking-lot ops/sec | Read-biased p999 | Parking-lot p999 |
+```bash
+./scripts/run-linux-bench.sh \
+  --duration-ms 2000 \
+  --warmup-ms 500 \
+  --threads 1,2,4,8,16 \
+  --shards 1,16,64 \
+  --mixes 80-20,50-50,20-80 \
+  --latency-sample-rate 512
+```
+
+16 threads, one hot shard:
+
+| Mix | rblock ops/sec | parking_lot ops/sec | rblock p999 | parking_lot p999 |
 | --- | ---: | ---: | ---: | ---: |
-| 80/20 | 28.0M | 26.2M | 6.2us | 12.9us |
-| 50/50 | 19.6M | 17.4M | 13.9us | 28.6us |
-| 20/80 | 16.3M | 14.0M | 15.9us | 34.9us |
+| 80/20 | 22.40M | 12.92M | 58.0us | 69.8us |
+| 50/50 | 20.78M | 9.36M | 54.4us | 77.3us |
+| 20/80 | 24.26M | 7.73M | 58.0us | 88.3us |
 
-Across the broader shared-cache A/B suite used during development,
-read-biased won 22 of 24 sharded-cache rows versus parking_lot. The largest
-wins showed up in read-heavy or mixed shared-handle workloads.
+16 threads, 16 shards:
+
+| Mix | rblock ops/sec | parking_lot ops/sec | rblock p999 | parking_lot p999 |
+| --- | ---: | ---: | ---: | ---: |
+| 80/20 | 87.47M | 94.19M | 1.4us | 1.9us |
+| 50/50 | 102.64M | 103.54M | 1.6us | 2.0us |
+| 20/80 | 120.76M | 119.56M | 1.5us | 1.9us |
+
+16 threads, 64 shards:
+
+| Mix | rblock ops/sec | parking_lot ops/sec | rblock p999 | parking_lot p999 |
+| --- | ---: | ---: | ---: | ---: |
+| 80/20 | 204.83M | 195.43M | 740ns | 670ns |
+| 50/50 | 211.84M | 209.63M | 640ns | 640ns |
+| 20/80 | 230.00M | 232.46M | 610ns | 590ns |
+
+The single-shard case shows where the read-biased policy buys substantial
+aggregate throughput under contention. Once contention is spread over many
+shards, the result is much closer: `rblock` is competitive, but it is not a
+universal throughput win over `parking_lot`.
 
 ### Writer Progress Warning
 
@@ -119,24 +148,38 @@ This is not a fixed offered-rate write workload. The writer thread runs as fast
 as the lock lets it, so `writer acq/s` is a progress signal under reader
 pressure. The latency columns are the main reason this benchmark exists.
 
-| Lock | Writer acq/s | Writer p999 |
-| --- | ---: | ---: |
-| rblock | 2 | 246.7ms |
-| parking_lot | 690k | 39.6us |
+Command:
+
+```bash
+BENCH=writer_progress \
+./scripts/run-linux-bench.sh \
+  --duration-ms 2000 \
+  --warmup-ms 500 \
+  --readers 1,2,4,8,16
+```
+
+| Readers | rblock writer acq/s | parking_lot writer acq/s | rblock p999 | parking_lot p999 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 1.10M | 5.41M | 12.1us | 570ns |
+| 2 | 220.0k | 4.20M | 53.9us | 1.4us |
+| 4 | 125.9k | 2.36M | 65.0us | 5.1us |
+| 8 | 10.3k | 1.41M | 1.4ms | 12.3us |
+| 16 | 9 | 658.6k | 230.7ms | 46.6us |
 
 This is the sharp edge. If writer progress or write p999 is the primary SLO,
 use a fair lock policy.
 
 ### What These Numbers Mean
 
-The tables above compare lock policy while keeping the surrounding sharded
-design the same. They do not claim that this crate is faster than every
-concurrent map or every cache layout.
+The load benchmark compares lock policy while keeping the synthetic sharded
+design the same. It measures aggregate operation latency, not separate reader
+and writer wait time.
 
-That distinction matters most under write-heavy Zipf skew. A read-biased lock
-can raise aggregate throughput while making write p999 worse. A fair lock can
-improve writer tails at a throughput cost. A purpose-built concurrent map may
-beat both if its exclusive path does less work than your full cache/store path.
+That distinction matters most when readers are continuous. A read-biased lock
+can raise aggregate throughput while making writer progress much worse. A fair
+lock can improve writer tails at a throughput cost. A purpose-built concurrent
+map may beat both if its exclusive path does less work than your full
+cache/store path.
 
 Use these results to decide whether `rblock` is worth testing in your design.
 Use your own application benchmark to decide whether it is worth shipping.

@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rblock::RwLock as ReadBiasedRwLock;
+use rblock::RwLock as RblockRwLock;
 
 #[derive(Debug, Clone)]
 struct Args {
@@ -24,14 +24,14 @@ trait BenchLock: Send + Sync + 'static {
     fn write(&self, work: usize);
 }
 
-struct ReadBiasedLock(ReadBiasedRwLock<usize>);
+struct RblockLock(RblockRwLock<usize>);
 struct ParkingLotLock(parking_lot::RwLock<usize>);
 
-impl BenchLock for ReadBiasedLock {
-    const NAME: &'static str = "read-biased";
+impl BenchLock for RblockLock {
+    const NAME: &'static str = "rblock";
 
     fn new() -> Self {
-        Self(ReadBiasedRwLock::new(0))
+        Self(RblockRwLock::new(0))
     }
 
     fn read(&self, work: usize) {
@@ -91,7 +91,7 @@ fn main() {
     );
 
     for &readers in &args.readers {
-        print_result(run_case::<ReadBiasedLock>(readers, &args));
+        print_result(run_case::<RblockLock>(readers, &args));
         print_result(run_case::<ParkingLotLock>(readers, &args));
     }
 }
