@@ -1,0 +1,28 @@
+[package]
+name = "rblock"
+version = "0.1.0"
+edition = "2024"
+authors = ["Devon Tietjen <devon@eden.dev>"]
+homepage = "https://github.com/d-tietjen/rblock"
+license = "Apache-2.0"
+repository = "https://github.com/d-tietjen/rblock"
+rust-version = "1.90"
+description = "A small read-biased RwLock for sharded, read-heavy caches"
+readme = "README.md"
+keywords = ["rwlock", "read-biased", "lock", "cache", "sync"]
+categories = ["concurrency", "caching", "data-structures"]
+
+[dependencies]
+lock_api = "0.4"
+parking_lot_core = "0.9"
+
+[dev-dependencies]
+parking_lot = "0.12"
+
+[[bench]]
+name = "rwlock_load"
+harness = false
+
+[[bench]]
+name = "writer_progress"
+harness = false
