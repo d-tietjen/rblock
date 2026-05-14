@@ -90,6 +90,36 @@ and latency, including p50, p99, p999, read p999, and write p999. That matters:
 this lock can improve ops/sec and read tails while making writer tails worse
 under continuous readers.
 
+### What The Load Benchmark Measures
+
+`rwlock_load` is a lock-only benchmark. It creates an array of cache-padded lock
+slots and runs the same workload against `rblock::RwLock<usize>` and
+`parking_lot::RwLock<usize>`. Each operation chooses a shard uniformly at
+random, then either:
+
+- takes a read lock and reads the `usize`, or
+- takes a write lock, increments the `usize`, and releases the lock.
+
+There is no hash table, key comparison, allocation, eviction, TTL check, IO, or
+application data structure in this benchmark. The point is to isolate lock
+policy under controlled contention.
+
+The `shards` setting controls how concentrated that contention is:
+
+- `shards=1` is one hot lock. Every thread contends for the same lock, which
+  stresses the read-biased policy most directly.
+- `shards=16` spreads operations uniformly over 16 independent locks. With 16
+  worker threads, the average contention per lock is much lower, so lock policy
+  matters less and scheduler/cache effects matter more.
+- `shards=64` spreads the same threads over many more locks. This approximates a
+  well-striped cache where most operations do not collide on the same shard.
+
+`ops/sec` is total completed lock operations per second across all worker
+threads. The latency columns are sampled end-to-end operation latency for the
+synthetic operation: shard choice, lock acquisition, the tiny critical section,
+and unlock. They combine reads and writes according to the selected mix; they
+are not separate read-latency and write-latency histograms.
+
 ## Representative Results
 
 These are representative Linux results from May 14, 2026. They are
